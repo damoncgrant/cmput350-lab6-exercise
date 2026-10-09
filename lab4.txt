@@ -1,1 +1,28 @@
 Answer written questions here:
+    1. In our doubling-iteration scheme, why do we start from a low number? 
+    Consider effects on rendering time/responsiveness and that we must 
+    finish a call to mandelbrotSmooth for each pixel before going on to 
+    the next frame.
+We start low to compute each pixel very quickly at the start, too many iterations and the
+frames will render slowly and be slow to respond to user input. 
+
+    2. Propose a way to increase efficiency of rendering for high iteration counts, 
+    exploiting that the rendering of each pixel is independent of the other pixels, 
+    and assuming you can use multiple computers/cores/threads at the same time 
+    (whatever level of abstraction you're comfortable with). In particular, suppose 
+    you can coordinate these computers by having one of them delegate tasks to others
+    and wait for their results.
+If we are able to compute each pixel on its own, we could divide the image into chunks and
+have a different worker for each chunk rather than having to iterate through every pixel per frame.
+In theory if we had 4 computers, one per chunk, we could render each frame 4x as fast although
+it wouldn't be exactly 4x since there is work that needs to happen to distribute the tasks and
+output the results into one place.
+
+    3. At “farther away” zooms with 1 centered sample per pixel, some regions of 
+    the set will look like speckled noise (try zooming into the zoomed view!), 
+    with jaggies at the boundary of the set. Consider and discuss what would happen 
+    if we sampled at the center of 4 subpixels per pixel and averaged the colors 
+    instead, from both a visual perspective and a performance perspective.
+This will make the imaging look smoother since we are getting more accurate colors by 
+doing more samples. This will negatively harm performance though since we are doing 4
+calculations per pixel instead of just 1. 

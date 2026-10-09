@@ -46,6 +46,7 @@ MandelbrotViewer::MandelbrotViewer(unsigned int windowWidth, unsigned int window
 
     // disable key repeat
     mWindow.setKeyRepeatEnabled(false);
+    mWindow.setFramerateLimit(60);
 
     // Initially no text to show
     mCursorWorldPosText.setString("");
@@ -68,6 +69,7 @@ void MandelbrotViewer::run() {
     sf::Clock clock;
     sf::Time lastTime = sf::Time();
     int maxIters = MAX_ITERS_LOWER_BOUND;
+    int renderedMaxIters = -1;
     while (true) {
         sf::Time curTime = clock.getElapsedTime();
         // Handle inputs
@@ -86,8 +88,11 @@ void MandelbrotViewer::run() {
         maxIters = (viewChanged ? MAX_ITERS_LOWER_BOUND
                                 : std::min(maxIters * ITERS_MULTIPLIER, MAX_ITERS_UPPER_BOUND));
         // Render:
-        drawIntoViewBuffer(maxIters);
-        copyViewBufferToGPU();
+        if (viewChanged || maxIters != renderedMaxIters) {
+            drawIntoViewBuffer(maxIters);
+            copyViewBufferToGPU();
+            renderedMaxIters = maxIters;
+        }
         draw();
         // update timing stats
         lastTime = curTime;
@@ -141,11 +146,14 @@ void MandelbrotViewer::updateViewState(const InputSummary& inputs, sf::Time delt
 void MandelbrotViewer::handleZoom(double scrollDistance, sf::Vector2i mousePosition) {
     double worldViewFactor = std::pow(ZOOM_EXPONENT_BASE, scrollDistance);
 
-    // TODO: expand our world view bounds (mMinPointWorld, mMaxPointWorld)
-    // by worldViewFactor around the current world point being pointed to by the user's cursor.
-    // In particular, the new world-coordinates rectangle will be of size
-    // (worldViewFactor * (orig world width), worldViewFactor * (orig world height)),
-    // and the user's cursor will point to exactly the same thing before and after the zoom.
+    // Find cursor world point
+    sf::Vector2<double> mouseWorldPos = windowPosToWorld(sf::Vector2<double>(mousePosition));
+
+    // Scale the distance from the cursor to each edge keeping the cursor's world point fixed
+    mMinPointWorld.x = mouseWorldPos.x + (mMinPointWorld.x - mouseWorldPos.x) * worldViewFactor;
+    mMaxPointWorld.x = mouseWorldPos.x + (mMaxPointWorld.x - mouseWorldPos.x) * worldViewFactor;
+    mMinPointWorld.y = mouseWorldPos.y + (mMinPointWorld.y - mouseWorldPos.y) * worldViewFactor;
+    mMaxPointWorld.y = mouseWorldPos.y + (mMaxPointWorld.y - mouseWorldPos.y) * worldViewFactor;
 }
 
 void MandelbrotViewer::handleWindowResize(sf::Vector2u newSize)  // newSize is in window coords.
@@ -164,11 +172,27 @@ void MandelbrotViewer::handleWindowResize(sf::Vector2u newSize)  // newSize is i
     //       cropped/extended, not zoomed.
     // ... your code here...
 
+    // Current center world point
+    double centerX = (mMinPointWorld.x + mMaxPointWorld.x) / 2;
+    double centerY = (mMinPointWorld.y + mMaxPointWorld.y) / 2;
+
+    // Scale dimensions
+    double widthScale = static_cast<double>(newSize.x) / mWindowSize.x;
+    double heightScale = static_cast<double>(newSize.y) / mWindowSize.y;
+    double newWorldWidth = (mMaxPointWorld.x - mMinPointWorld.x) * widthScale;
+    double newWorldHeight = (mMaxPointWorld.y - mMinPointWorld.y) * heightScale;
+
+    // Place the new edges equally far from the center.
+    mMinPointWorld = {centerX - newWorldWidth / 2, centerY - newWorldHeight / 2};
+    mMaxPointWorld = {centerX + newWorldWidth / 2, centerY + newWorldHeight / 2};
+
     // update CPU-side image buffer size to have enough memory for all the pixels:
     mViewBuffer.resize(newSize);
     // TODO: update mViewBufferGPU so that it has enough memory for all the pixels in the new window
     // size
     //      Hint: (void)mViewBufferGPU.resize ... something ... this is a trivial one-liner.
+    (void)mViewBufferGPU.resize(newSize);
+
     // The sprite will have an incorrect view into the texture after resize, so we update:
     mViewSprite.setTextureRect(sf::IntRect({0, 0}, sf::Vector2i(newSize)));
     mWindowSize = newSize;  // update mWindowSize.
@@ -200,8 +224,24 @@ void MandelbrotViewer::updateUIText(sf::Vector2i mouseWindowCoords) {
 double MandelbrotViewer::mandelbrot(double cX, double cY, int maxIters) const {
     // TODO: return the number of iterations it takes for z to escape a radius of 2,
     //       if it happens within maxIters iterations, otherwise return infinity.
+    // c = cX + icY, point (cX, cY)
+    // z0 = 0 + 0i
+    double zX = 0, zY = 0;
+    double radius = 2;
 
-    return std::numeric_limits<double>::infinity();  // get rid of this and add your code here...
+    for (int it = 1; it <= maxIters; ++it) {
+        double zPrimeX = zX * zX - zY * zY + cX;
+        double zPrimeY = 2 * zX * zY + cY;
+
+        if (zPrimeX * zPrimeX + zPrimeY * zPrimeY > radius * radius) {
+            return it;
+        }
+
+        zX = zPrimeX;
+        zY = zPrimeY;
+    }
+
+    return std::numeric_limits<double>::infinity();  
 }
 
 double MandelbrotViewer::mandelbrotSmooth(double cX, double cY, int maxIters) const {
@@ -210,7 +250,21 @@ double MandelbrotViewer::mandelbrotSmooth(double cX, double cY, int maxIters) co
     //       If you use an escape radius of exactly 2, you will see some artifacts. Use a
     //       higher radius (this is still correct, since divergence -> infty), but with more
     //       computational cost (since you need to simulate more steps).
-    return std::numeric_limits<double>::infinity();  // get rid of this and add your code here...
+    double zX = 0, zY = 0;
+    double radius = 4;
+
+    for (int it = 1; it <= maxIters; ++it) {
+        double zPrimeX = zX * zX - zY * zY + cX;
+        double zPrimeY = 2 * zX * zY + cY;
+
+        if (zPrimeX * zPrimeX + zPrimeY * zPrimeY > radius * radius) {
+            return it + 1 - (std::log2(std::log2((zPrimeX * zPrimeX + zPrimeY * zPrimeY))))/ LOG_2;
+        }
+
+        zX = zPrimeX;
+        zY = zPrimeY;
+    }
+    return std::numeric_limits<double>::infinity(); 
 }
 
 // windowPosToWorld takes a point in window coordinates and converts it to world coordinates
@@ -218,8 +272,10 @@ sf::Vector2<double> MandelbrotViewer::windowPosToWorld(const sf::Vector2<double>
     // TODO: given a point in window coordinates (by default SFML gives these as sf::Vector2i,
     //       the caller will have to cast to sf::Vector2<double>), convert them into world
     //       coordinates in the context of the current world view.
+    double worldX = mMinPointWorld.x + (pWindow.x / mWindowSize.x) * (mMaxPointWorld.x - mMinPointWorld.x);
+    double worldY = mMaxPointWorld.y - (pWindow.y / mWindowSize.y) * (mMaxPointWorld.y - mMinPointWorld.y);
 
-    return {};
+    return {worldX, worldY};
 }
 
 // drawIntoBuffer renders the current world view (bounded by mMinPointWorld and mMaxPointWorld)
@@ -232,6 +288,18 @@ void MandelbrotViewer::drawIntoViewBuffer(int maxIters) {
     //       the escape radius (using mandelbrotSmooth() or mandelbrot()). If it never escapes,
     //       color the pixel black, otherwise, pass the escape iteration number to
     //       CyclicGradient::DEFAULT_GRADIENT(n) to get a colour to set the pixel to.
+    for (unsigned int y = 0; y < mWindowSize.y; ++y) {
+        for (unsigned int x = 0; x < mWindowSize.x; ++x) {
+            sf::Vector2<double> worldPos = windowPosToWorld({x + 0.5, y + 0.5}); // adding 0.5 to get to the center of the pixel
+            double n = mandelbrotSmooth(worldPos.x, worldPos.y, maxIters);
+
+            if (std::isinf(n)) {
+                mViewBuffer.setPixel({x, y}, sf::Color::Black);
+            } else {
+                mViewBuffer.setPixel({x, y}, CyclicGradient::DEFAULT_GRADIENT(n));
+            }
+        }
+    }
 }
 
 // copyViewBufferToGPU takes the drawn CPU-side buffer mViewBuffer and copies it to the
@@ -239,6 +307,7 @@ void MandelbrotViewer::drawIntoViewBuffer(int maxIters) {
 void MandelbrotViewer::copyViewBufferToGPU() {
     // TODO: load mViewBuffer from the CPU into mViewBufferGPU on the GPU.
     // Hint: this is a one-liner.
+    mViewBufferGPU.update(mViewBuffer);
 }
 
 // draw clears the window, draws the view, as well as the text with its shadow underneath
